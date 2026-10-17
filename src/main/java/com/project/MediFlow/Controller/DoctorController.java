@@ -2,6 +2,7 @@ package com.project.MediFlow.Controller;
 
 import com.project.MediFlow.Dtos.DoctorRequest;
 import com.project.MediFlow.Dtos.DoctorResponse;
+import com.project.MediFlow.Dtos.AvailableSlotResponse;
 import com.project.MediFlow.Service.DoctorService;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -10,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.time.LocalDate;
 
 @RestController
 @RequestMapping("/api/doctors")
@@ -39,6 +41,14 @@ public class DoctorController {
     @PreAuthorize("hasAnyRole('PATIENT', 'DOCTOR', 'RECEPTIONIST', 'ADMIN')")
     public ResponseEntity<DoctorResponse> getDoctorById(@PathVariable Long id) {
         return ResponseEntity.ok(doctorService.getDoctorById(id));
+    }
+
+    @GetMapping("/{doctorId}/available-slots")
+    @PreAuthorize("hasAnyRole('PATIENT', 'DOCTOR', 'RECEPTIONIST', 'ADMIN')")
+    public ResponseEntity<List<AvailableSlotResponse>> getAvailableSlots(
+            @PathVariable Long doctorId,
+            @RequestParam LocalDate date) {
+        return ResponseEntity.ok(doctorService.getAvailableSlots(doctorId, date));
     }
 
     @PutMapping("/{id}")
