@@ -75,11 +75,10 @@ public class AppointmentServiceImpl implements AppointmentService {
                 );
 
         // 2. Check doctor
-        Doctor doctor = doctorRepository.findById(request.getDoctorId())
+        Doctor doctor = doctorRepository.findByIdForBooking(request.getDoctorId())
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
-                                "Doctor not found with id: "
-                                        + request.getDoctorId()
+                                "Doctor not found with id: " + request.getDoctorId()
                         )
                 );
 
@@ -530,63 +529,64 @@ public class AppointmentServiceImpl implements AppointmentService {
     // RESCHEDULE APPOINTMENT
     // =========================================================
 
+
     @Override
     @Transactional
     public AppointmentResponse rescheduleAppointment(
             Long id,
             LocalDateTime newAppointmentDateTime) {
 
-        Appointment appointment =
-                appointmentRepository.findById(id)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Appointment not found with id: "
-                                                + id
-                                )
-                        );
+        Appointment appointment = appointmentRepository.findById(id)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Appointment not found with id: " + id
+                        )
+                );
 
         if (appointment.getStatus() == AppointmentStatus.CANCELLED) {
-
             throw new IllegalStateException(
                     "Cancelled appointment cannot be rescheduled"
             );
         }
 
         if (appointment.getStatus() == AppointmentStatus.REJECTED) {
-
             throw new IllegalStateException(
                     "Rejected appointment cannot be rescheduled"
             );
         }
 
         if (appointment.getStatus() == AppointmentStatus.COMPLETED) {
-
             throw new IllegalStateException(
                     "Completed appointment cannot be rescheduled"
             );
         }
 
         if (newAppointmentDateTime == null) {
-
             throw new IllegalArgumentException(
                     "New appointment date and time cannot be null"
             );
         }
 
         if (!newAppointmentDateTime.isAfter(LocalDateTime.now())) {
-
             throw new IllegalArgumentException(
                     "New appointment date and time must be in the future"
             );
         }
 
+        // Lock the doctor's row before checking the destination slot.
+        Doctor doctor = doctorRepository
+                .findByIdForBooking(appointment.getDoctor().getId())
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Doctor not found")
+                );
+
+        // Validate availability and overlapping appointments.
         validateBookableSlot(
-                appointment.getDoctor().getId(),
+                doctor.getId(),
                 newAppointmentDateTime,
                 id
         );
 
-        // CANCELLED and REJECTED appointments do not block slots.
         List<AppointmentStatus> freeStatuses = List.of(
                 AppointmentStatus.CANCELLED,
                 AppointmentStatus.REJECTED
@@ -595,14 +595,13 @@ public class AppointmentServiceImpl implements AppointmentService {
         boolean doctorAlreadyBooked =
                 appointmentRepository
                         .existsByDoctor_IdAndAppointmentDateTimeAndIdNotAndStatusNotIn(
-                                appointment.getDoctor().getId(),
+                                doctor.getId(),
                                 newAppointmentDateTime,
                                 id,
                                 freeStatuses
                         );
 
         if (doctorAlreadyBooked) {
-
             throw new DuplicateResourceException(
                     "Doctor is already booked for this time"
             );
@@ -611,15 +610,12 @@ public class AppointmentServiceImpl implements AppointmentService {
         LocalDateTime oldAppointmentDateTime =
                 appointment.getAppointmentDateTime();
 
-        appointment.setAppointmentDateTime(
-                newAppointmentDateTime
-        );
+        appointment.setAppointmentDateTime(newAppointmentDateTime);
 
         Appointment savedAppointment =
                 appointmentRepository.save(appointment);
 
         Patient patient = savedAppointment.getPatient();
-        Doctor doctor = savedAppointment.getDoctor();
 
         AppointmentEvent event = new AppointmentEvent(
                 AppointmentEventType.APPOINTMENT_RESCHEDULED,
@@ -641,6 +637,7 @@ public class AppointmentServiceImpl implements AppointmentService {
         );
     }
 
+
     // =========================================================
     // PATIENT - REQUEST APPOINTMENT
     // =========================================================
@@ -661,13 +658,10 @@ public class AppointmentServiceImpl implements AppointmentService {
                         );
 
         // 2. Find doctor
-        Doctor doctor =
-                doctorRepository.findById(request.getDoctorId())
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Doctor not found"
-                                )
-                        );
+        Doctor doctor = doctorRepository.findByIdForBooking(request.getDoctorId())
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Doctor not found")
+                );
 
         validateBookableSlot(
                 request.getDoctorId(),
@@ -751,6 +745,7 @@ public class AppointmentServiceImpl implements AppointmentService {
     // ACCEPT APPOINTMENT
     // =========================================================
 
+
     @Override
     @Transactional
     public AppointmentResponse acceptAppointment(Long id) {
@@ -764,21 +759,26 @@ public class AppointmentServiceImpl implements AppointmentService {
                         );
 
         if (appointment.getStatus() != AppointmentStatus.PENDING) {
-
             throw new IllegalStateException(
                     "Only PENDING appointments can be accepted"
             );
         }
 
+        // Lock the doctor's row before validating the appointment slot.
+        Doctor doctor = doctorRepository
+                .findByIdForBooking(appointment.getDoctor().getId())
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Doctor not found")
+                );
+
+        // Revalidate the slot while holding the doctor's lock.
         validateBookableSlot(
-                appointment.getDoctor().getId(),
+                doctor.getId(),
                 appointment.getAppointmentDateTime(),
                 appointment.getId()
         );
 
-        appointment.setStatus(
-                AppointmentStatus.SCHEDULED
-        );
+        appointment.setStatus(AppointmentStatus.SCHEDULED);
 
         Appointment savedAppointment =
                 appointmentRepository.save(appointment);
@@ -786,9 +786,10 @@ public class AppointmentServiceImpl implements AppointmentService {
         return mapToResponse(
                 savedAppointment,
                 savedAppointment.getPatient(),
-                savedAppointment.getDoctor()
+                doctor
         );
     }
+
 
     // =========================================================
     // REJECT APPOINTMENT
