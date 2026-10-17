@@ -226,17 +226,22 @@ public class AppointmentServiceImpl implements AppointmentService {
             LocalDateTime windowEnd = LocalDateTime.of(date, window.getEndTime());
 
             while (!slotStart.plusMinutes(30).isAfter(windowEnd)) {
-                LocalDateTime slotEnd = slotStart.plusMinutes(30);
+                final LocalDateTime currentSlotStart = slotStart;
+                final LocalDateTime currentSlotEnd = currentSlotStart.plusMinutes(30);
+
                 boolean occupied = appointments.stream().anyMatch(appointment -> {
                     LocalDateTime existingStart = appointment.getAppointmentDateTime();
                     LocalDateTime existingEnd = existingStart.plusMinutes(30);
-                    return existingStart.isBefore(slotEnd) && existingEnd.isAfter(slotStart);
+
+                    return existingStart.isBefore(currentSlotEnd)
+                            && existingEnd.isAfter(currentSlotStart);
                 });
 
-                if (slotStart.isAfter(now) && !occupied) {
-                    slots.add(new AvailableSlotResponse(slotStart, slotEnd));
+                if (currentSlotStart.isAfter(now) && !occupied) {
+                    slots.add(new AvailableSlotResponse(currentSlotStart, currentSlotEnd));
                 }
-                slotStart = slotEnd;
+
+                slotStart = currentSlotEnd;
             }
         }
 
