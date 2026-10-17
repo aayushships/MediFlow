@@ -35,3 +35,11 @@ build/
 
 # Application configuration / secrets
 src/main/resources/application.yaml
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+.env
+.env.*
+!.env.example
