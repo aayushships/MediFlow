@@ -4,6 +4,8 @@ import com.project.MediFlow.Dtos.DoctorAvailabilityRequest;
 import com.project.MediFlow.Dtos.DoctorAvailabilityResponse;
 import com.project.MediFlow.Exception.ResourceNotFoundException;
 import com.project.MediFlow.Repository.DoctorAvailabilityRepository;
+import com.project.MediFlow.Repository.AppointmentRepository;
+import com.project.MediFlow.Enum.AppointmentStatus;
 import com.project.MediFlow.Repository.DoctorRepository;
 import com.project.MediFlow.Service.DoctorAvailabilityService;
 import com.project.MediFlow.entities.Doctor;
@@ -14,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
@@ -22,6 +25,7 @@ public class DoctorAvailabilityServiceImpl implements DoctorAvailabilityService 
 
     private final DoctorAvailabilityRepository availabilityRepository;
     private final DoctorRepository doctorRepository;
+    private final AppointmentRepository appointmentRepository;
 
     @Override
     @Transactional
@@ -90,6 +94,9 @@ public class DoctorAvailabilityServiceImpl implements DoctorAvailabilityService 
 
         validateRequest(request);
         validateNoOverlap(doctor.getId(), request.date(), request.startTime(), request.endTime(), availabilityId);
+        if (hasActiveAppointmentInWindow(doctor.getId(), availability.getDate(), availability.getStartTime(), availability.getEndTime())) {
+            throw new IllegalStateException("Availability cannot be changed while it contains active appointments");
+        }
 
         availability.setDate(request.date());
         availability.setStartTime(request.startTime());
@@ -111,6 +118,10 @@ public class DoctorAvailabilityServiceImpl implements DoctorAvailabilityService 
             throw new IllegalArgumentException("You can only delete your own availability");
         }
 
+        if (hasActiveAppointmentInWindow(doctor.getId(), availability.getDate(), availability.getStartTime(), availability.getEndTime())) {
+            throw new IllegalStateException("Availability cannot be deleted while it contains active appointments");
+        }
+
         availabilityRepository.delete(availability);
     }
 
@@ -118,6 +129,34 @@ public class DoctorAvailabilityServiceImpl implements DoctorAvailabilityService 
         return doctorRepository.findByEmailIgnoreCase(email)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Doctor profile not found for email: " + email));
+    }
+
+    private boolean hasActiveAppointmentInWindow(
+            Long doctorId,
+            LocalDate date,
+            LocalTime startTime,
+            LocalTime endTime) {
+
+        // Appointments are 30 minutes long; include a preceding half-hour
+        // to detect any existing appointment that overlaps the window start.
+        LocalDateTime from = LocalDateTime.of(date, startTime).minusMinutes(30);
+        LocalDateTime to = LocalDateTime.of(date, endTime);
+
+        return appointmentRepository
+                .findByDoctor_IdAndAppointmentDateTimeGreaterThanEqualAndAppointmentDateTimeLessThanAndStatusNotIn(
+                        doctorId,
+                        from,
+                        to,
+                        List.of(AppointmentStatus.CANCELLED, AppointmentStatus.REJECTED))
+                .stream()
+                .anyMatch(appointment -> {
+                    LocalDateTime appointmentStart = appointment.getAppointmentDateTime();
+                    LocalDateTime appointmentEnd = appointmentStart.plusMinutes(30);
+                    LocalDateTime windowStart = LocalDateTime.of(date, startTime);
+                    LocalDateTime windowEnd = LocalDateTime.of(date, endTime);
+                    return appointmentStart.isBefore(windowEnd)
+                            && appointmentEnd.isAfter(windowStart);
+                });
     }
 
     private void validateRequest(DoctorAvailabilityRequest request) {
