@@ -1,203 +1,102 @@
 # MediFlow 🏥
 
-MediFlow is a backend clinic management system built using **Spring Boot**. The project aims to automate common clinic workflows such as patient registration, appointment management, and notifications.
+MediFlow is a clinic-management backend built with Spring Boot. It supports patient registration, appointment workflows, JWT authentication, PostgreSQL persistence, and asynchronous notifications through RabbitMQ.
 
-A major goal of MediFlow is to demonstrate **asynchronous processing using RabbitMQ**, allowing time-consuming tasks such as sending notifications to run in the background without blocking the main request.
+## Tech stack
 
-## Problem
+- Java 21 and Spring Boot
+- Spring Data JPA and PostgreSQL
+- RabbitMQ for asynchronous messaging
+- Docker and Docker Compose
+- JWT authentication
+- Maven
 
-In a traditional synchronous system, when an appointment is booked the application may need to:
+## Run with Docker Compose
 
-```text
-Book Appointment
-      ↓
-Save Appointment
-      ↓
-Send Email
-      ↓
-Send Notification
-      ↓
-Return Response
+You need **Docker Desktop** (Windows/macOS) or Docker Engine plus the Docker Compose plugin (Linux). You do not need to install Java, Maven, PostgreSQL, or RabbitMQ on the host.
+
+1. Clone the repository and enter its directory:
+
+   ```bash
+   git clone https://github.com/aayushships/MediFlow.git
+   cd MediFlow
+   ```
+
+2. Create your local environment file:
+
+   **Windows PowerShell**
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+   **macOS/Linux**
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Edit `.env`. Set strong unique values for `DB_PASSWORD`, `RABBITMQ_PASSWORD`, and `JWT_SECRET`. For Gmail notifications, set `MAIL_USERNAME` and a Gmail **App Password** in `MAIL_PASSWORD`; do not use your normal Gmail password. If email is not configured, the app can still start, but email delivery will fail until valid credentials are supplied.
+
+4. Build and start the stack:
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+   Compose starts PostgreSQL and RabbitMQ, waits for their health checks, then starts the Spring Boot app. The first build can take a few minutes.
+
+5. Check container status and application logs:
+
+   ```bash
+   docker compose ps
+   docker compose logs --tail=100 app
+   ```
+
+   Look for `Started MediFlowApplication` in the app logs.
+
+6. The API is available at **http://localhost:8080**. If Springdoc/Swagger UI is included and enabled in this build, open **http://localhost:8080/swagger-ui/index.html**.
+
+### Services and ports
+
+| Service | Host address | Purpose |
+| --- | --- | --- |
+| Spring Boot API | `localhost:8080` | REST API |
+| PostgreSQL | `localhost:5433` | Database (host access; app uses the internal Compose network) |
+| RabbitMQ management UI | `http://localhost:15672` | Queue/exchange management; sign in using `RABBITMQ_USER` and `RABBITMQ_PASSWORD` from `.env` |
+
+The app connects to services using Compose service names (`postgres` and `rabbitmq`), not `localhost`. RabbitMQ is included in the stack, so a separate host RabbitMQ installation is not required.
+
+### Useful commands
+
+```bash
+# Follow app logs
+docker compose logs -f app
+
+# Stop the containers (keeps named volumes/data)
+docker compose down
+
+# Stop and delete containers AND database/message-broker data
+# WARNING: this permanently deletes the named volume data
+docker compose down -v
 ```
 
-If the notification service is slow, the user has to wait for the entire process.
+### Notes
 
-MediFlow will use RabbitMQ to process these tasks asynchronously:
+- Keep `.env` private. It is ignored by Git; commit only `.env.example`.
+- Use new, strong passwords and a long random JWT secret for each deployment.
+- The database and RabbitMQ data persist in named Docker volumes.
+- If you change PostgreSQL credentials after the database volume has already been initialized, changing `.env` alone does not change the existing database user's password. Update the database user password or recreate the volume only if you are willing to lose its data.
+- This Compose setup is intended for local development/demo use. Before public production deployment, add HTTPS, restrict exposed database/broker ports, configure production secrets, and review health/readiness and backup policies.
 
-```text
-Book Appointment
-      ↓
-Save to PostgreSQL
-      ↓
-Publish Event → RabbitMQ
-      ↓
-Return Response Immediately
+## Current features
 
-Meanwhile:
+- Patient registration and retrieval
+- Input validation and centralized exception handling
+- Appointment scheduling and lifecycle operations
+- JWT-based authentication/authorization
+- PostgreSQL persistence
+- RabbitMQ-backed asynchronous notifications
+- Docker Compose development stack
 
-RabbitMQ → Consumer → Send Notification
-```
+## Project status
 
-This keeps the main API responsive while background tasks are processed independently.
-
-## Tech Stack
-
-* Java
-* Spring Boot
-* Spring Data JPA
-* PostgreSQL
-* RabbitMQ *(planned)*
-* Docker *(planned)*
-* JWT Authentication *(planned)*
-* Maven
-* Git & GitHub
-
-## Architecture
-
-MediFlow follows a layered backend architecture:
-
-```text
-Client
-  ↓
-Controller
-  ↓
-Service
-  ↓
-Repository
-  ↓
-PostgreSQL
-```
-
-The application uses DTOs to separate the external API contract from database entities.
-
-## Current Features
-
-### Patient Management
-
-Currently implemented:
-
-* Register a patient
-* Get all patients
-* Get patient by ID
-* Patient request/response DTOs
-* Input validation
-* Duplicate email detection
-* Duplicate phone number detection
-* Custom exception handling
-* Global validation error handling
-* Proper HTTP status codes
-
-## Patient APIs
-
-### Create Patient
-
-```http
-POST /api/patients
-```
-
-Example request:
-
-```json
-{
-  "firstName": "Rahul",
-  "lastName": "Sharma",
-  "age": 25,
-  "gender": "Male",
-  "phone": "9876543210",
-  "email": "rahul@example.com",
-  "address": "Pune"
-}
-```
-
-### Get All Patients
-
-```http
-GET /api/patients
-```
-
-### Get Patient By ID
-
-```http
-GET /api/patients/{id}
-```
-
-Example:
-
-```http
-GET /api/patients/1
-```
-
-## Error Handling
-
-MediFlow uses centralized exception handling using Spring Boot's `@RestControllerAdvice`.
-
-For example, invalid input can return:
-
-```json
-{
-  "status": 400,
-  "message": "Validation Failed",
-  "errors": {
-    "phone": "Phone number must be 10 digits"
-  }
-}
-```
-
-Trying to register an existing email can return:
-
-```json
-{
-  "status": 409,
-  "message": "Email already exists."
-}
-```
-
-Requesting a patient that does not exist can return:
-
-```json
-{
-  "status": 404,
-  "message": "Patient not found with id: 100"
-}
-```
-
-## Planned Features
-
-* Update patient
-* Delete patient
-* Doctor management
-* Appointment scheduling
-* RabbitMQ asynchronous event processing
-* Email/notification service
-* Docker containerization
-* Authentication and authorization using JWT
-* API documentation
-* Automated testing
-
-## Planned RabbitMQ Flow
-
-One of the main goals of MediFlow is to demonstrate event-driven asynchronous processing.
-
-```text
-Appointment Created
-        ↓
-Appointment Service
-        ↓
-Publish AppointmentBooked Event
-        ↓
-RabbitMQ Exchange
-        ↓
-Notification Queue
-        ↓
-Notification Consumer
-        ↓
-Send Confirmation
-```
-
-The appointment API will not need to wait for the notification to be sent before returning a successful response.
-
-## Project Status
-
-🚧 **Under active development**
-
-Currently working On Appointment feature .
+🚧 Under active development.
