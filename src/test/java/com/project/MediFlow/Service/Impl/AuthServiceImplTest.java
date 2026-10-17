@@ -2,9 +2,8 @@ package com.project.MediFlow.Service.Impl;
 
 import com.project.MediFlow.Dtos.LoginRequest;
 import com.project.MediFlow.Dtos.RegisterRequest;
-import com.project.MediFlow.Repository.UserRepository;
 import com.project.MediFlow.Repository.PatientRepository;
-import com.project.MediFlow.Service.Impl.AuthServiceImpl;
+import com.project.MediFlow.Repository.UserRepository;
 import com.project.MediFlow.security.JwtService;
 import com.project.MediFlow.entities.User;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +18,7 @@ import static org.mockito.Mockito.*;
 
 class AuthServiceImplTest {
     private UserRepository users;
+    private PatientRepository patients;
     private PasswordEncoder encoder;
     private JwtService jwt;
     private AuthServiceImpl service;
@@ -26,18 +26,31 @@ class AuthServiceImplTest {
     @BeforeEach
     void setUp() {
         users = mock(UserRepository.class);
+        patients = mock(PatientRepository.class);
         encoder = mock(PasswordEncoder.class);
         jwt = mock(JwtService.class);
-        service = new AuthServiceImpl(users, encoder, jwt);
+        service = new AuthServiceImpl(users, patients, encoder, jwt);
     }
 
-    @Test
-    void registerSavesEncodedPasswordWhenEmailIsNew() {
+    private RegisterRequest validRegistration() {
         RegisterRequest request = new RegisterRequest();
         request.setEmail("new@example.com");
         request.setPassword("Secret123!");
+        request.setFirstName("Aarav");
+        request.setLastName("Patil");
+        request.setAge(21);
+        request.setGender("Male");
+        request.setPhone("9876501234");
+        request.setAddress("Pune");
+        return request;
+    }
 
+    @Test
+    void registerCreatesUserAndPatientProfile() {
+        RegisterRequest request = validRegistration();
         when(users.existsByEmail(request.getEmail())).thenReturn(false);
+        when(patients.existsByEmail(request.getEmail())).thenReturn(false);
+        when(patients.existsByPhone(request.getPhone())).thenReturn(false);
         when(encoder.encode("Secret123!")).thenReturn("encoded-password");
 
         service.register(request);
@@ -46,17 +59,32 @@ class AuthServiceImplTest {
                 user.getEmail().equals("new@example.com")
                         && user.getPassword().equals("encoded-password")
                         && user.isEnabled()));
+        verify(patients).save(argThat(patient ->
+                patient.getEmail().equals("new@example.com")
+                        && patient.getFirstName().equals("Aarav")
+                        && patient.getPhone().equals("9876501234")));
     }
 
     @Test
-    void registerRejectsDuplicateEmail() {
-        RegisterRequest request = new RegisterRequest();
-        request.setEmail("existing@example.com");
-        request.setPassword("Secret123!");
+    void registerRejectsDuplicateUserEmail() {
+        RegisterRequest request = validRegistration();
         when(users.existsByEmail(request.getEmail())).thenReturn(true);
 
         assertThrows(IllegalArgumentException.class, () -> service.register(request));
         verify(users, never()).save(any());
+        verify(patients, never()).save(any());
+    }
+
+    @Test
+    void registerRejectsDuplicatePatientPhone() {
+        RegisterRequest request = validRegistration();
+        when(users.existsByEmail(request.getEmail())).thenReturn(false);
+        when(patients.existsByEmail(request.getEmail())).thenReturn(false);
+        when(patients.existsByPhone(request.getPhone())).thenReturn(true);
+
+        assertThrows(IllegalArgumentException.class, () -> service.register(request));
+        verify(users, never()).save(any());
+        verify(patients, never()).save(any());
     }
 
     @Test
