@@ -4,6 +4,7 @@ import com.project.MediFlow.Dtos.DoctorRequest;
 import com.project.MediFlow.Dtos.DoctorResponse;
 import com.project.MediFlow.Dtos.AvailableSlotResponse;
 import com.project.MediFlow.Service.DoctorService;
+import com.project.MediFlow.Service.AppointmentService;
 import jakarta.validation.Valid;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.http.HttpStatus;
@@ -18,9 +19,11 @@ import java.time.LocalDate;
 public class DoctorController {
 
     private final DoctorService doctorService;
+    private final AppointmentService appointmentService;
 
-    public DoctorController(DoctorService doctorService) {
+    public DoctorController(DoctorService doctorService, AppointmentService appointmentService) {
         this.doctorService = doctorService;
+        this.appointmentService = appointmentService;
     }
 
     @PostMapping
@@ -48,7 +51,7 @@ public class DoctorController {
     public ResponseEntity<List<AvailableSlotResponse>> getAvailableSlots(
             @PathVariable Long doctorId,
             @RequestParam LocalDate date) {
-        return ResponseEntity.ok(doctorService.getAvailableSlots(doctorId, date));
+        return ResponseEntity.ok(appointmentService.getAvailableSlots(doctorId, date));
     }
 
     @PutMapping("/{id}")
