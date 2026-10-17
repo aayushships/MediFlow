@@ -56,25 +56,32 @@ public class AppointmentServiceImpl implements AppointmentService {
         this.appointmentProducer = appointmentProducer;
     }
 
-    // =========================================================
-    // RECEPTIONIST / ADMIN - CREATE APPOINTMENT
-    // =========================================================
-
     @Override
     @Transactional
-    public AppointmentResponse createAppointment(
-            AppointmentRequest request) {
+    public AppointmentResponse createAppointment(AppointmentRequest request) {
 
-        // 1. Check patient
+        // 1. Validate that the request contains the required information.
+        if (request == null) {
+            throw new IllegalArgumentException("Appointment request is required");
+        }
+
+        if (request.getPatientId() == null) {
+            throw new IllegalArgumentException("Patient ID is required");
+        }
+
+        if (request.getDoctorId() == null) {
+            throw new IllegalArgumentException("Doctor ID is required");
+        }
+
+        // 2. Check patient existence.
         Patient patient = patientRepository.findById(request.getPatientId())
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
-                                "Patient not found with id: "
-                                        + request.getPatientId()
+                                "Patient not found with id: " + request.getPatientId()
                         )
                 );
 
-        // 2. Check doctor
+        // 3. Lock the doctor row to serialize booking attempts for this doctor.
         Doctor doctor = doctorRepository.findByIdForBooking(request.getDoctorId())
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
@@ -82,30 +89,36 @@ public class AppointmentServiceImpl implements AppointmentService {
                         )
                 );
 
-        // Validate the requested 30-minute slot against explicit doctor availability.
-        validateBookableSlot(request.getDoctorId(), request.getAppointmentDateTime(), null);
+        // 4. Validate the slot while holding the doctor's lock.
+        // Rejects past times, invalid 30-minute boundaries,
+        // unavailable slots and overlapping appointments.
+        validateBookableSlot(
+                doctor.getId(),
+                request.getAppointmentDateTime(),
+                null
+        );
 
-        // 3. Check doctor's availability
-        //
-        // CANCELLED and REJECTED appointments free the slot.
-        // All other statuses block the slot.
+        // 5. Check for an existing appointment at the exact time.
         List<AppointmentStatus> freeStatuses = List.of(
                 AppointmentStatus.CANCELLED,
                 AppointmentStatus.REJECTED
         );
 
-        if (appointmentRepository
-                .existsByDoctor_IdAndAppointmentDateTimeAndStatusNotIn(
-                        request.getDoctorId(),
-                        request.getAppointmentDateTime(),
-                        freeStatuses)) {
+        boolean alreadyBooked =
+                appointmentRepository
+                        .existsByDoctor_IdAndAppointmentDateTimeAndStatusNotIn(
+                                doctor.getId(),
+                                request.getAppointmentDateTime(),
+                                freeStatuses
+                        );
 
+        if (alreadyBooked) {
             throw new DuplicateResourceException(
                     "Doctor already has an appointment at this time"
             );
         }
 
-        // 4. Create appointment
+        // 6. Create and save the appointment.
         Appointment appointment = Appointment.builder()
                 .patient(patient)
                 .doctor(doctor)
@@ -116,10 +129,9 @@ public class AppointmentServiceImpl implements AppointmentService {
                 .notificationStatus(NotificationStatus.PENDING)
                 .build();
 
-        Appointment savedAppointment =
-                appointmentRepository.save(appointment);
+        Appointment savedAppointment = appointmentRepository.save(appointment);
 
-        // 5. Create event
+        // 7. Create the appointment event.
         AppointmentEvent event = new AppointmentEvent(
                 AppointmentEventType.APPOINTMENT_CREATED,
                 savedAppointment.getId(),
@@ -131,32 +143,21 @@ public class AppointmentServiceImpl implements AppointmentService {
                 null
         );
 
-        // 6. Publish notification
-        //
-        // If RabbitMQ is unavailable, the appointment remains
-        // successfully saved with notificationStatus = PENDING.
+        // 8. Publish the event.
+        // Notification remains PENDING if publishing fails.
         try {
-
             appointmentProducer.publishAppointmentEvent(event);
-
         } catch (Exception e) {
-
-            System.out.println(
+            System.err.println(
                     "RabbitMQ unavailable. Notification remains PENDING for appointment "
                             + savedAppointment.getId()
             );
         }
 
-        return mapToResponse(
-                savedAppointment,
-                patient,
-                doctor
-        );
+        // 9. Return the response.
+        return mapToResponse(savedAppointment, patient, doctor);
     }
 
-    // =========================================================
-    // MAP ENTITY TO RESPONSE
-    // =========================================================
 
     public AppointmentResponse mapToResponse(
             Appointment appointment,
