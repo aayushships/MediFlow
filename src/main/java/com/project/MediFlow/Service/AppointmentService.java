@@ -2,8 +2,10 @@ package com.project.MediFlow.Service;
 
 import com.project.MediFlow.Dtos.AppointmentRequest;
 import com.project.MediFlow.Dtos.AppointmentResponse;
+import com.project.MediFlow.Dtos.AvailableSlotResponse;
 import com.project.MediFlow.dto.PatientAppointmentRequest;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -12,6 +14,8 @@ public interface AppointmentService {
     AppointmentResponse createAppointment(AppointmentRequest request);
 
     List<AppointmentResponse> getAllAppointments();
+
+    List<AvailableSlotResponse> getAvailableSlots(Long doctorId, LocalDate date);
 
     List<AppointmentResponse> getAppointmentsForDoctor(String email);
 

@@ -2,6 +2,7 @@ package com.project.MediFlow.Service.Impl;
 
 import com.project.MediFlow.Dtos.AppointmentRequest;
 import com.project.MediFlow.Dtos.AppointmentResponse;
+import com.project.MediFlow.Dtos.AvailableSlotResponse;
 import com.project.MediFlow.Enum.AppointmentEventType;
 import com.project.MediFlow.Enum.AppointmentStatus;
 import com.project.MediFlow.Enum.NotificationStatus;
@@ -10,11 +11,13 @@ import com.project.MediFlow.Exception.ResourceNotFoundException;
 import com.project.MediFlow.RabbitMQ.Event.AppointmentEvent;
 import com.project.MediFlow.RabbitMQ.Producer.AppointmentProducer;
 import com.project.MediFlow.Repository.AppointmentRepository;
+import com.project.MediFlow.Repository.DoctorAvailabilityRepository;
 import com.project.MediFlow.Repository.DoctorRepository;
 import com.project.MediFlow.Repository.PatientRepository;
 import com.project.MediFlow.Service.AppointmentService;
 import com.project.MediFlow.dto.PatientAppointmentRequest;
 import com.project.MediFlow.entities.Appointment;
+import com.project.MediFlow.entities.DoctorAvailability;
 import com.project.MediFlow.entities.Doctor;
 import com.project.MediFlow.entities.Patient;
 
@@ -23,7 +26,11 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 @Service
@@ -31,6 +38,7 @@ public class AppointmentServiceImpl implements AppointmentService {
 
     private final AppointmentRepository appointmentRepository;
     private final PatientRepository patientRepository;
+    private final DoctorAvailabilityRepository availabilityRepository;
     private final DoctorRepository doctorRepository;
     private final AppointmentProducer appointmentProducer;
 
@@ -38,11 +46,13 @@ public class AppointmentServiceImpl implements AppointmentService {
             AppointmentRepository appointmentRepository,
             PatientRepository patientRepository,
             DoctorRepository doctorRepository,
+            DoctorAvailabilityRepository availabilityRepository,
             AppointmentProducer appointmentProducer) {
 
         this.appointmentRepository = appointmentRepository;
         this.patientRepository = patientRepository;
         this.doctorRepository = doctorRepository;
+        this.availabilityRepository = availabilityRepository;
         this.appointmentProducer = appointmentProducer;
     }
 
@@ -72,6 +82,9 @@ public class AppointmentServiceImpl implements AppointmentService {
                                         + request.getDoctorId()
                         )
                 );
+
+        // Validate the requested 30-minute slot against explicit doctor availability.
+        validateBookableSlot(request.getDoctorId(), request.getAppointmentDateTime(), null);
 
         // 3. Check doctor's availability
         //
@@ -172,6 +185,114 @@ public class AppointmentServiceImpl implements AppointmentService {
                 .reason(appointment.getReason())
                 .status(appointment.getStatus())
                 .build();
+    }
+
+    // =========================================================
+    // AVAILABLE SLOTS (30 MINUTES)
+    // =========================================================
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<AvailableSlotResponse> getAvailableSlots(Long doctorId, LocalDate date) {
+        if (date == null) {
+            throw new IllegalArgumentException("Date is required");
+        }
+
+        doctorRepository.findById(doctorId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Doctor not found with id: " + doctorId));
+
+        LocalDateTime dayStart = date.atStartOfDay();
+        LocalDateTime dayEnd = date.plusDays(1).atStartOfDay();
+        List<AppointmentStatus> freeStatuses = List.of(
+                AppointmentStatus.CANCELLED,
+                AppointmentStatus.REJECTED
+        );
+
+        List<Appointment> appointments =
+                appointmentRepository
+                        .findByDoctor_IdAndAppointmentDateTimeGreaterThanEqualAndAppointmentDateTimeLessThanAndStatusNotIn(
+                                doctorId, dayStart, dayEnd, freeStatuses);
+
+        List<DoctorAvailability> windows =
+                availabilityRepository.findByDoctorIdAndDateOrderByStartTime(
+                        doctorId, date);
+
+        LocalDateTime now = LocalDateTime.now();
+        List<AvailableSlotResponse> slots = new ArrayList<>();
+
+        for (DoctorAvailability window : windows) {
+            LocalDateTime slotStart = LocalDateTime.of(date, window.getStartTime());
+            LocalDateTime windowEnd = LocalDateTime.of(date, window.getEndTime());
+
+            while (!slotStart.plusMinutes(30).isAfter(windowEnd)) {
+                final LocalDateTime currentSlotStart = slotStart;
+                final LocalDateTime currentSlotEnd = currentSlotStart.plusMinutes(30);
+
+                boolean occupied = appointments.stream().anyMatch(appointment -> {
+                    LocalDateTime existingStart = appointment.getAppointmentDateTime();
+                    LocalDateTime existingEnd = existingStart.plusMinutes(30);
+
+                    return existingStart.isBefore(currentSlotEnd)
+                            && existingEnd.isAfter(currentSlotStart);
+                });
+
+                if (currentSlotStart.isAfter(now) && !occupied) {
+                    slots.add(new AvailableSlotResponse(currentSlotStart, currentSlotEnd));
+                }
+
+                slotStart = currentSlotEnd;
+            }
+        }
+
+        slots.sort(Comparator.comparing(AvailableSlotResponse::startTime));
+        return slots;
+    }
+
+    private void validateBookableSlot(Long doctorId, LocalDateTime slotStart, Long excludedAppointmentId) {
+        if (slotStart == null || !slotStart.isAfter(LocalDateTime.now())) {
+            throw new IllegalArgumentException("Appointment must be in the future");
+        }
+        if (slotStart.getSecond() != 0 || slotStart.getNano() != 0
+                || slotStart.getMinute() % 30 != 0) {
+            throw new IllegalArgumentException(
+                    "Appointment must start on a 30-minute boundary (e.g. 09:00 or 09:30)");
+        }
+
+        LocalDate date = slotStart.toLocalDate();
+        LocalTime start = slotStart.toLocalTime();
+        LocalTime end = start.plusMinutes(30);
+
+        boolean withinAvailability = availabilityRepository
+                .findByDoctorIdAndDateOrderByStartTime(doctorId, date)
+                .stream()
+                .anyMatch(window -> !start.isBefore(window.getStartTime())
+                        && !end.isAfter(window.getEndTime()));
+
+        if (!withinAvailability) {
+            throw new IllegalArgumentException(
+                    "Requested 30-minute slot is outside the doctor's availability");
+        }
+
+        List<AppointmentStatus> freeStatuses = List.of(
+                AppointmentStatus.CANCELLED,
+                AppointmentStatus.REJECTED
+        );
+        boolean occupied = appointmentRepository
+                .findByDoctor_IdAndAppointmentDateTimeGreaterThanEqualAndAppointmentDateTimeLessThanAndStatusNotIn(
+                        doctorId, date.atStartOfDay(), date.plusDays(1).atStartOfDay(), freeStatuses)
+                .stream()
+                .filter(a -> excludedAppointmentId == null || !a.getId().equals(excludedAppointmentId))
+                .anyMatch(a -> {
+                    LocalDateTime existingStart = a.getAppointmentDateTime();
+                    LocalDateTime existingEnd = existingStart.plusMinutes(30);
+                    return existingStart.isBefore(slotStart.plusMinutes(30))
+                            && existingEnd.isAfter(slotStart);
+                });
+
+        if (occupied) {
+            throw new DuplicateResourceException("Doctor already has an appointment overlapping this slot");
+        }
     }
 
     // =========================================================
@@ -459,6 +580,12 @@ public class AppointmentServiceImpl implements AppointmentService {
             );
         }
 
+        validateBookableSlot(
+                appointment.getDoctor().getId(),
+                newAppointmentDateTime,
+                id
+        );
+
         // CANCELLED and REJECTED appointments do not block slots.
         List<AppointmentStatus> freeStatuses = List.of(
                 AppointmentStatus.CANCELLED,
@@ -541,6 +668,12 @@ public class AppointmentServiceImpl implements AppointmentService {
                                         "Doctor not found"
                                 )
                         );
+
+        validateBookableSlot(
+                request.getDoctorId(),
+                request.getAppointmentDateTime(),
+                null
+        );
 
         // 3. Check whether slot is occupied
         //
@@ -636,6 +769,12 @@ public class AppointmentServiceImpl implements AppointmentService {
                     "Only PENDING appointments can be accepted"
             );
         }
+
+        validateBookableSlot(
+                appointment.getDoctor().getId(),
+                appointment.getAppointmentDateTime(),
+                appointment.getId()
+        );
 
         appointment.setStatus(
                 AppointmentStatus.SCHEDULED
