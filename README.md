@@ -2,11 +2,9 @@
 
 A clinic appointment backend with PostgreSQL-backed booking, concurrent double-booking protection, JWT authentication, and asynchronous email notifications using Spring Boot and RabbitMQ.
 
-## Demo
 
 **Swagger UI:** [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
 
-Add a short 60–90 second demo recording showing login, booking an appointment, and receiving the notification email.
 
 ## Key Features
 
